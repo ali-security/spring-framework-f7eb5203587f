@@ -57,6 +57,53 @@ public class ByteArrayHttpMessageConverterTests {
 		assertThat(result).as("Invalid result").isEqualTo(body);
 	}
 
+	@Test  // CVE-2024-38828
+	public void readWithContentLengthHeaderSet() throws IOException {
+		byte[] body = new byte[]{0x1, 0x2, 0x3, 0x4, 0x5};
+		MockHttpInputMessage inputMessage = new MockHttpInputMessage(body);
+		inputMessage.getHeaders().setContentType(new MediaType("application", "octet-stream"));
+		inputMessage.getHeaders().setContentLength(body.length);
+		byte[] result = converter.read(byte[].class, inputMessage);
+		assertThat(result).as("Invalid result").isEqualTo(body);
+	}
+
+	@Test  // CVE-2024-38828
+	public void readWithEmptyBodyAndZeroContentLength() throws IOException {
+		MockHttpInputMessage inputMessage = new MockHttpInputMessage(new byte[0]);
+		inputMessage.getHeaders().setContentType(new MediaType("application", "octet-stream"));
+		inputMessage.getHeaders().setContentLength(0);
+		byte[] result = converter.read(byte[].class, inputMessage);
+		assertThat(result).as("Invalid result").isEmpty();
+	}
+
+	@Test  // CVE-2024-38828
+	public void readWithHugeContentLengthDoesNotPreallocate() throws IOException {
+		// A tiny body declaring a ~2GB Content-Length must not allocate ~2GB up front
+		byte[] body = new byte[]{0x1, 0x2, 0x3, 0x4, 0x5};
+		MockHttpInputMessage inputMessage = new MockHttpInputMessage(body);
+		inputMessage.getHeaders().setContentType(new MediaType("application", "octet-stream"));
+		inputMessage.getHeaders().setContentLength(Integer.MAX_VALUE - 8);
+		byte[] result = converter.read(byte[].class, inputMessage);
+		assertThat(result).as("Invalid result").isEqualTo(body);
+	}
+
+	@Test  // CVE-2024-38828
+	public void readWithContentLengthBeyondIntRangeDoesNotPreallocate() throws IOException {
+		// Content-Length values beyond the int range must not wrap into a huge (or negative) buffer size
+		byte[] body = new byte[]{0x1, 0x2, 0x3, 0x4, 0x5};
+		MockHttpInputMessage inputMessage = new MockHttpInputMessage(body);
+		inputMessage.getHeaders().setContentType(new MediaType("application", "octet-stream"));
+		inputMessage.getHeaders().setContentLength(0x17FFFFFF7L);  // (int) cast == Integer.MAX_VALUE - 8
+		byte[] result = converter.read(byte[].class, inputMessage);
+		assertThat(result).as("Invalid result").isEqualTo(body);
+
+		inputMessage = new MockHttpInputMessage(body);
+		inputMessage.getHeaders().setContentType(new MediaType("application", "octet-stream"));
+		inputMessage.getHeaders().setContentLength(0x80000000L);  // (int) cast == Integer.MIN_VALUE
+		result = converter.read(byte[].class, inputMessage);
+		assertThat(result).as("Invalid result").isEqualTo(body);
+	}
+
 	@Test
 	public void write() throws IOException {
 		MockHttpOutputMessage outputMessage = new MockHttpOutputMessage();

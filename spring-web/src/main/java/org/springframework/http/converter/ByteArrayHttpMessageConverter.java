@@ -54,9 +54,17 @@ public class ByteArrayHttpMessageConverter extends AbstractHttpMessageConverter<
 	@Override
 	public byte[] readInternal(Class<? extends byte[]> clazz, HttpInputMessage inputMessage) throws IOException {
 		long contentLength = inputMessage.getHeaders().getContentLength();
-		ByteArrayOutputStream bos =
-				new ByteArrayOutputStream(contentLength >= 0 ? (int) contentLength : StreamUtils.BUFFER_SIZE);
-		StreamUtils.copy(inputMessage.getBody(), bos);
+		// CVE-2024-38828: never pre-size the buffer from the client-supplied Content-Length,
+		// since a large declared length would allocate that much memory up front regardless
+		// of the actual body size (DoS). The buffer grows with the bytes actually read, and
+		// a sane, bounded Content-Length caps how much is read.
+		ByteArrayOutputStream bos = new ByteArrayOutputStream(StreamUtils.BUFFER_SIZE);
+		if (contentLength >= 0 && contentLength < Integer.MAX_VALUE) {
+			StreamUtils.copyRange(inputMessage.getBody(), bos, 0, (int) contentLength - 1);
+		}
+		else {
+			StreamUtils.copy(inputMessage.getBody(), bos);
+		}
 		return bos.toByteArray();
 	}
 
