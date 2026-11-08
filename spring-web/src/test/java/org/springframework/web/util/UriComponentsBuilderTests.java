@@ -1235,4 +1235,111 @@ class UriComponentsBuilderTests {
 		assertThat(result.getQuery()).isEqualTo("q=1");
 	}
 
+	@Test  // CVE-2024-22243, CVE-2024-22259
+	public void fromHttpUrlInvalidIPv6MissingClosingBracket() {
+		assertThatIllegalArgumentException().isThrownBy(() ->
+				UriComponentsBuilder.fromHttpUrl("http://[1abc:2abc:3abc::5ABC:6abc:8080/resource"));
+	}
+
+	@Test  // CVE-2024-22243, CVE-2024-22259
+	public void fromUriStringInvalidIPv6MissingClosingBracket() {
+		assertThatIllegalArgumentException().isThrownBy(() ->
+				UriComponentsBuilder.fromUriString("http://[1abc:2abc:3abc::5ABC:6abc:8080/resource").build());
+	}
+
+	@Test  // CVE-2024-22243, CVE-2024-22259
+	public void fromOriginHeaderInvalidIPv6MissingClosingBracket() {
+		assertThatIllegalArgumentException().isThrownBy(() ->
+				UriComponentsBuilder.fromOriginHeader("http://[1abc:2abc:3abc::5ABC:6abc:8080"));
+	}
+
+	@Test  // CVE-2024-22243, CVE-2024-22259
+	public void fromUriStringValidIPv6() {
+		UriComponents result = UriComponentsBuilder
+				.fromUriString("http://[1abc:2abc:3abc::5ABC:6abc]:8080/resource").build();
+		assertThat(result.getHost()).isEqualTo("[1abc:2abc:3abc::5ABC:6abc]");
+		assertThat(result.getPort()).isEqualTo(8080);
+	}
+
+	@Test  // CVE-2024-22243, CVE-2024-22259
+	public void fromHttpUrlValidIPv6() {
+		UriComponents result = UriComponentsBuilder
+				.fromHttpUrl("http://[1abc:2abc:3abc::5ABC:6abc]:8080/resource").build();
+		assertThat(result.getHost()).isEqualTo("[1abc:2abc:3abc::5ABC:6abc]");
+		assertThat(result.getPort()).isEqualTo(8080);
+	}
+
+	@Test  // CVE-2024-22243, CVE-2024-22259
+	public void fromOriginHeaderValidIPv6() {
+		UriComponents result = UriComponentsBuilder
+				.fromOriginHeader("http://[1abc:2abc:3abc::5ABC:6abc]:8080").build();
+		assertThat(result.getHost()).isEqualTo("[1abc:2abc:3abc::5ABC:6abc]");
+		assertThat(result.getPort()).isEqualTo(8080);
+	}
+
+	@Test  // CVE-2024-22243, CVE-2024-22259
+	public void fromUriStringHttpSchemeWithoutHost() {
+		assertThatIllegalArgumentException().isThrownBy(() ->
+				UriComponentsBuilder.fromUriString("http://:8080/resource").build());
+	}
+
+	@Test  // CVE-2024-22243, CVE-2024-22259
+	public void fromHttpUrlHttpSchemeWithoutHost() {
+		assertThatIllegalArgumentException().isThrownBy(() ->
+				UriComponentsBuilder.fromHttpUrl("http://:8080/resource"));
+	}
+
+	@Test  // CVE-2024-22243, CVE-2024-22259
+	public void httpSchemeWithoutHostIsCaseInsensitive() {
+		assertThatIllegalArgumentException().isThrownBy(() ->
+				UriComponentsBuilder.fromUriString("HTTP:///evil.com").build());
+		assertThatIllegalArgumentException().isThrownBy(() ->
+				UriComponentsBuilder.fromHttpUrl("HTTP:///evil.com"));
+	}
+
+	@Test  // CVE-2024-22243
+	public void userInfoWithOpeningBracket() {
+		String url = "https://example.com[@evil.com/path";
+
+		UriComponents result = UriComponentsBuilder.fromUriString(url).build();
+		assertThat(result.getUserInfo()).isEqualTo("example.com[");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPath()).isEqualTo("/path");
+
+		result = UriComponentsBuilder.fromHttpUrl(url).build();
+		assertThat(result.getUserInfo()).isEqualTo("example.com[");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPath()).isEqualTo("/path");
+	}
+
+	@Test  // CVE-2024-22259
+	public void userInfoWithAtSignAndOpeningBracket() {
+		String url = "https://user@example.com[@evil.com/path";
+
+		UriComponents result = UriComponentsBuilder.fromUriString(url).build();
+		assertThat(result.getUserInfo()).isEqualTo("user@example.com[");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPath()).isEqualTo("/path");
+
+		result = UriComponentsBuilder.fromHttpUrl(url).build();
+		assertThat(result.getUserInfo()).isEqualTo("user@example.com[");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPath()).isEqualTo("/path");
+	}
+
+	@Test  // CVE-2024-22259
+	public void userInfoWithMultipleAtSigns() {
+		String url = "https://user@example.com@evil.com/path";
+
+		UriComponents result = UriComponentsBuilder.fromUriString(url).build();
+		assertThat(result.getUserInfo()).isEqualTo("user@example.com");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPath()).isEqualTo("/path");
+
+		result = UriComponentsBuilder.fromHttpUrl(url).build();
+		assertThat(result.getUserInfo()).isEqualTo("user@example.com");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPath()).isEqualTo("/path");
+	}
+
 }
