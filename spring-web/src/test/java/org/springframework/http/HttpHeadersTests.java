@@ -394,6 +394,24 @@ public class HttpHeadersTests {
 		assertThat(headers.getContentDisposition()).as("Invalid Content-Disposition header").isEqualTo(disposition);
 	}
 
+	@Test
+	public void contentDispositionFormDataWithControlCharacters() {
+		headers.setContentDispositionFormData("name\r\nX-Injected: evil", "file\r\n.txt");
+
+		String value = headers.getFirst(HttpHeaders.CONTENT_DISPOSITION);
+		assertThat(value).isEqualTo("form-data; name=\"nameX-Injected: evil\"; filename=\"file.txt\"");
+		assertThat(value).doesNotContain("\r", "\n");
+	}
+
+	@Test
+	public void contentDispositionWithControlCharacters() {
+		headers.setContentDisposition(ContentDisposition.builder("attachment").filename("report\r\n.pdf").build());
+
+		String value = headers.getFirst(HttpHeaders.CONTENT_DISPOSITION);
+		assertThat(value).isEqualTo("attachment; filename=\"report.pdf\"");
+		assertThat(value).doesNotContain("\r", "\n");
+	}
+
 	@Test  // SPR-11917
 	public void getAllowEmptySet() {
 		headers.setAllow(Collections.emptySet());
