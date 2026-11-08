@@ -16,10 +16,16 @@
 
 package org.springframework.web.server.session;
 
+import java.lang.reflect.Field;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Disabled;
@@ -28,6 +34,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import org.springframework.beans.DirectFieldAccessor;
+import org.springframework.util.ReflectionUtils;
 import org.springframework.web.server.WebSession;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -161,12 +168,198 @@ public class InMemoryWebSessionStoreTests {
 			.withMessage("Max sessions limit reached: 10000");
 	}
 
+	@Test // gh-35121
+	public void changeSessionIdRemovesOldIdFromStore() {
+		WebSession session = this.store.createWebSession().block();
+		assertThat(session).isNotNull();
+		session.start();
+		session.save().block();
+
+		String oldId = session.getId();
+		assertThat(this.store.getSessions()).containsOnlyKeys(oldId);
+
+		session.changeSessionId().block();
+
+		String newId = session.getId();
+		assertThat(newId).isNotEqualTo(oldId);
+		assertThat(this.store.getSessions()).containsOnlyKeys(newId);
+		assertThat(this.store.getSessions().get(newId)).isSameAs(session);
+		assertThat(this.store.retrieveSession(oldId).block()).isNull();
+		assertThat(this.store.retrieveSession(newId).block()).isSameAs(session);
+	}
+
+	@Test // gh-35121
+	public void saveAfterChangeSessionIdDoesNotRestoreOldId() {
+		WebSession session = this.store.createWebSession().block();
+		assertThat(session).isNotNull();
+		session.start();
+		session.save().block();
+
+		String oldId = session.getId();
+		session.changeSessionId().block();
+		String newId = session.getId();
+
+		// A save triggered after the id changed must not re-register the old id
+		session.save().block();
+
+		assertThat(this.store.getSessions()).containsOnlyKeys(newId);
+		assertThat(this.store.retrieveSession(oldId).block()).isNull();
+	}
+
+	@Test // gh-35121
+	public void saveIsIdempotent() {
+		WebSession session = this.store.createWebSession().block();
+		assertThat(session).isNotNull();
+		session.start();
+
+		session.save().block();
+		session.save().block();
+		session.save().block();
+
+		assertThat(session.isStarted()).isTrue();
+		assertThat(this.store.getSessions()).containsOnlyKeys(session.getId());
+		assertThat(this.store.retrieveSession(session.getId()).block()).isSameAs(session);
+	}
+
+	@Test // gh-35121
+	public void saveAfterInvalidateFails() {
+		WebSession session = this.store.createWebSession().block();
+		assertThat(session).isNotNull();
+		session.start();
+		session.save().block();
+		String id = session.getId();
+
+		session.invalidate().block();
+		assertThat(this.store.getSessions()).doesNotContainKey(id);
+
+		// Re-populate attributes so that the session is considered started again
+		session.getAttributes().put("foo", "bar");
+
+		assertThatIllegalStateException()
+				.isThrownBy(() -> session.save().block())
+				.withMessage("Session was invalidated");
+
+		assertThat(this.store.getSessions()).doesNotContainKey(id);
+	}
+
+	@Test // gh-35121, session fixation
+	public void concurrentSaveDoesNotResurrectOldSessionId() throws Exception {
+		WebSession session = this.store.createWebSession().block();
+		assertThat(session).isNotNull();
+		session.start();
+
+		// Instrument the session map so that the very first insert can be suspended
+		// at the exact point where the session is about to be registered under the
+		// id that the saving thread read.
+		TrappingSessionMap sessions = new TrappingSessionMap();
+		replaceSessionsMap(this.store, sessions);
+
+		String oldId = session.getId();
+		AtomicReference<Throwable> failure = new AtomicReference<>();
+
+		// Request 1: saves the session and gets suspended mid-insert.
+		Thread saving = newThread("save", () -> session.save().block(), failure);
+		saving.start();
+		assertThat(sessions.trapped.await(5, TimeUnit.SECONDS)).isTrue();
+
+		// Request 2: concurrently rotates the session id, e.g. right after authentication.
+		Thread changing = newThread("changeSessionId", () -> session.changeSessionId().block(), failure);
+		changing.start();
+
+		// Give request 2 the chance to complete first, then release request 1. Without
+		// the lock, request 1 completes its insert with the id it read before the
+		// rotation and the pre-authentication id becomes usable again.
+		sessions.removed.await(1, TimeUnit.SECONDS);
+		sessions.release.countDown();
+
+		saving.join(10_000);
+		changing.join(10_000);
+		assertThat(saving.isAlive()).isFalse();
+		assertThat(changing.isAlive()).isFalse();
+		assertThat(failure.get()).isNull();
+
+		String newId = session.getId();
+		assertThat(newId).isNotEqualTo(oldId);
+		assertThat(this.store.getSessions()).containsOnlyKeys(newId);
+		assertThat(this.store.retrieveSession(oldId).block()).isNull();
+		assertThat(this.store.retrieveSession(newId).block()).isSameAs(session);
+	}
+
+	private static Thread newThread(String name, Runnable runnable, AtomicReference<Throwable> failure) {
+		Thread thread = new Thread(() -> {
+			try {
+				runnable.run();
+			}
+			catch (Throwable ex) {
+				failure.compareAndSet(null, ex);
+			}
+		}, name);
+		thread.setDaemon(true);
+		return thread;
+	}
+
+	private static void replaceSessionsMap(InMemoryWebSessionStore store, Map<String, Object> map) {
+		Field field = ReflectionUtils.findField(InMemoryWebSessionStore.class, "sessions");
+		assertThat(field).isNotNull();
+		ReflectionUtils.makeAccessible(field);
+		ReflectionUtils.setField(field, store, map);
+	}
+
 	private WebSession insertSession() {
 		WebSession session = this.store.createWebSession().block();
 		assertThat(session).isNotNull();
 		session.start();
 		session.save().block();
 		return session;
+	}
+
+
+	/**
+	 * Session map that suspends the first insert until released, and signals when
+	 * an entry is removed. This makes the save/changeSessionId interleaving that
+	 * leads to session fixation reproducible.
+	 */
+	@SuppressWarnings("serial")
+	private static class TrappingSessionMap extends ConcurrentHashMap<String, Object> {
+
+		final CountDownLatch trapped = new CountDownLatch(1);
+
+		final CountDownLatch release = new CountDownLatch(1);
+
+		final CountDownLatch removed = new CountDownLatch(1);
+
+		private final AtomicBoolean armed = new AtomicBoolean(true);
+
+		@Override
+		public Object put(String key, Object value) {
+			suspendFirstInsert();
+			return super.put(key, value);
+		}
+
+		@Override
+		public Object putIfAbsent(String key, Object value) {
+			suspendFirstInsert();
+			return super.putIfAbsent(key, value);
+		}
+
+		@Override
+		public Object remove(Object key) {
+			Object previous = super.remove(key);
+			this.removed.countDown();
+			return previous;
+		}
+
+		private void suspendFirstInsert() {
+			if (this.armed.compareAndSet(true, false)) {
+				this.trapped.countDown();
+				try {
+					this.release.await(10, TimeUnit.SECONDS);
+				}
+				catch (InterruptedException ex) {
+					Thread.currentThread().interrupt();
+				}
+			}
+		}
 	}
 
 }
