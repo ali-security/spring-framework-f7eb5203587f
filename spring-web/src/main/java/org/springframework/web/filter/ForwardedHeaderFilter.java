@@ -67,7 +67,7 @@ import org.springframework.web.util.UrlPathHelper;
 public class ForwardedHeaderFilter extends OncePerRequestFilter {
 
 	private static final Set<String> FORWARDED_HEADER_NAMES =
-			Collections.newSetFromMap(new LinkedCaseInsensitiveMap<>(6, Locale.ENGLISH));
+			Collections.newSetFromMap(new LinkedCaseInsensitiveMap<>(6, Locale.ROOT));
 
 	static {
 		FORWARDED_HEADER_NAMES.add("Forwarded");
@@ -170,7 +170,7 @@ public class ForwardedHeaderFilter extends OncePerRequestFilter {
 		}
 
 		private static Map<String, List<String>> initHeaders(HttpServletRequest request) {
-			Map<String, List<String>> headers = new LinkedCaseInsensitiveMap<>(Locale.ENGLISH);
+			Map<String, List<String>> headers = new LinkedCaseInsensitiveMap<>(Locale.ROOT);
 			Enumeration<String> names = request.getHeaderNames();
 			while (names.hasMoreElements()) {
 				String name = names.nextElement();

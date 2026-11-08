@@ -24,6 +24,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -283,7 +284,7 @@ public class UriComponentsBuilder implements UriBuilder, Cloneable {
 		if (matcher.matches()) {
 			UriComponentsBuilder builder = new UriComponentsBuilder();
 			String scheme = matcher.group(1);
-			builder.scheme(scheme != null ? scheme.toLowerCase() : null);
+			builder.scheme(scheme != null ? scheme.toLowerCase(Locale.ROOT) : null);
 			builder.userInfo(matcher.group(4));
 			String host = matcher.group(5);
 			if (StringUtils.hasLength(scheme) && !StringUtils.hasLength(host)) {

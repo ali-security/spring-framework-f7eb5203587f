@@ -75,7 +75,7 @@ public final class MediaTypeFactory {
 				String[] tokens = StringUtils.tokenizeToStringArray(line, " \t\n\r\f");
 				MediaType mediaType = MediaType.parseMediaType(tokens[0]);
 				for (int i = 1; i < tokens.length; i++) {
-					String fileExtension = tokens[i].toLowerCase(Locale.ENGLISH);
+					String fileExtension = tokens[i].toLowerCase(Locale.ROOT);
 					result.add(fileExtension, mediaType);
 				}
 			}
@@ -113,7 +113,7 @@ public final class MediaTypeFactory {
 	 */
 	public static List<MediaType> getMediaTypes(@Nullable String filename) {
 		return Optional.ofNullable(StringUtils.getFilenameExtension(filename))
-				.map(s -> s.toLowerCase(Locale.ENGLISH))
+				.map(s -> s.toLowerCase(Locale.ROOT))
 				.map(fileExtensionToMediaTypes::get)
 				.orElse(Collections.emptyList());
 	}
