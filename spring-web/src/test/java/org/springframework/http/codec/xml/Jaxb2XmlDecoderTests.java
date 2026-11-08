@@ -32,7 +32,9 @@ import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import org.springframework.core.ResolvableType;
+import org.springframework.core.codec.Hints;
 import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferLimitException;
 import org.springframework.core.testfixture.io.buffer.AbstractLeakCheckingTests;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.xml.jaxb.XmlRootElement;
@@ -94,7 +96,7 @@ public class Jaxb2XmlDecoderTests extends AbstractLeakCheckingTests {
 	@Test
 	public void splitOneBranches() {
 		Flux<XMLEvent> xmlEvents = this.xmlEventDecoder.decode(toDataBufferMono(POJO_ROOT), null, null, HINTS);
-		Flux<List<XMLEvent>> result = this.decoder.split(xmlEvents, new QName("pojo"));
+		Flux<List<XMLEvent>> result = this.decoder.split(xmlEvents, new QName("pojo"), null);
 
 		StepVerifier.create(result)
 				.consumeNextWith(events -> {
@@ -115,8 +117,7 @@ public class Jaxb2XmlDecoderTests extends AbstractLeakCheckingTests {
 	@Test
 	public void splitMultipleBranches() {
 		Flux<XMLEvent> xmlEvents = this.xmlEventDecoder.decode(toDataBufferMono(POJO_CHILD), null, null, HINTS);
-		Flux<List<XMLEvent>> result = this.decoder.split(xmlEvents, new QName("pojo"));
-
+		Flux<List<XMLEvent>> result = this.decoder.split(xmlEvents, new QName("pojo"), null);
 
 		StepVerifier.create(result)
 				.consumeNextWith(events -> {
@@ -141,6 +142,102 @@ public class Jaxb2XmlDecoderTests extends AbstractLeakCheckingTests {
 					assertEndElement(events.get(6), "bar");
 					assertEndElement(events.get(7), "pojo");
 				})
+				.expectComplete()
+				.verify();
+	}
+
+	@Test
+	public void splitMultipleBranchesLimitExceeded() {
+
+		Flux<String> source = Flux.just(
+				"<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+				"<root><pojo><foo>foo</foo></pojo>",
+				"<pojo><foo>foofoo</foo>",
+				"<bar>barbar</bar></pojo>",
+				"<root/>");
+
+		XmlEventDecoder.ReceivedByteTracker byteTracker = new XmlEventDecoder.ReceivedByteTracker(30);
+		Map<String, Object> hints = Hints.from(XmlEventDecoder.BYTE_TRACKER_HINT, byteTracker);
+		Flux<XMLEvent> xmlEvents = this.xmlEventDecoder.decode(source.map(this::toToDataBuffer), null, null, hints);
+		Flux<List<XMLEvent>> result = this.decoder.split(xmlEvents, new QName("pojo"), byteTracker);
+
+		StepVerifier.create(result)
+				.consumeNextWith(events -> {
+					assertThat(events).hasSize(5);
+					assertStartElement(events.get(0), "pojo");
+					assertStartElement(events.get(1), "foo");
+					assertCharacters(events.get(2), "foo");
+					assertEndElement(events.get(3), "foo");
+					assertEndElement(events.get(4), "pojo");
+				})
+				.expectError(DataBufferLimitException.class)
+				.verify();
+	}
+
+	@Test  // gh-35803, CVE-2026-47891
+	public void decodeLimitExceededWhenTargetElementIsDocumentRoot() {
+
+		// The buffered XML node is the document root itself, so the byte count must
+		// not be reset while its child elements start and end.
+
+		this.decoder.setMaxInMemorySize(30);
+
+		Flux<String> source = Flux.just(
+				"<pojo>",
+				"<foo>aaaaaaaaaa</foo>",
+				"<foo>bbbbbbbbbb</foo>",
+				"<foo>cccccccccc</foo>",
+				"<bar>dddddddddd</bar>",
+				"</pojo>");
+
+		Flux<Object> output = this.decoder.decode(
+				source.map(this::toToDataBuffer), ResolvableType.forClass(Pojo.class), null, HINTS);
+
+		StepVerifier.create(output)
+				.expectError(DataBufferLimitException.class)
+				.verify();
+	}
+
+	@Test  // gh-35803, CVE-2026-47891
+	public void decodeLimitExceededWithNestedElements() {
+
+		// The buffered XML node is nested below the root, and its own child elements
+		// must not reset the byte count either.
+
+		this.decoder.setMaxInMemorySize(30);
+
+		Flux<String> source = Flux.just(
+				"<root><pojo>",
+				"<foo>aaaaaaaaaa</foo>",
+				"<foo>bbbbbbbbbb</foo>",
+				"<bar>cccccccccc</bar>",
+				"</pojo></root>");
+
+		Flux<Object> output = this.decoder.decode(
+				source.map(this::toToDataBuffer), ResolvableType.forClass(Pojo.class), null, HINTS);
+
+		StepVerifier.create(output)
+				.expectError(DataBufferLimitException.class)
+				.verify();
+	}
+
+	@Test  // gh-35803, CVE-2026-47891
+	public void decodeWithinLimit() {
+
+		this.decoder.setMaxInMemorySize(1024);
+
+		Flux<String> source = Flux.just(
+				"<root>",
+				"<pojo><foo>foo</foo><bar>bar</bar></pojo>",
+				"<pojo><foo>foofoo</foo><bar>barbar</bar></pojo>",
+				"</root>");
+
+		Flux<Object> output = this.decoder.decode(
+				source.map(this::toToDataBuffer), ResolvableType.forClass(Pojo.class), null, HINTS);
+
+		StepVerifier.create(output)
+				.expectNext(new Pojo("foo", "bar"))
+				.expectNext(new Pojo("foofoo", "barbar"))
 				.expectComplete()
 				.verify();
 	}
@@ -245,11 +342,16 @@ public class Jaxb2XmlDecoderTests extends AbstractLeakCheckingTests {
 
 	private Mono<DataBuffer> toDataBufferMono(String value) {
 		return Mono.defer(() -> {
-			byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
-			DataBuffer buffer = this.bufferFactory.allocateBuffer(bytes.length);
-			buffer.write(bytes);
+			DataBuffer buffer = toToDataBuffer(value);
 			return Mono.just(buffer);
 		});
+	}
+
+	private DataBuffer toToDataBuffer(String value) {
+		byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+		DataBuffer buffer = this.bufferFactory.allocateBuffer(bytes.length);
+		buffer.write(bytes);
+		return buffer;
 	}
 
 
