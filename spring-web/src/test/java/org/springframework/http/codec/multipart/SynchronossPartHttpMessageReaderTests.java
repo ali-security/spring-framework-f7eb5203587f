@@ -19,8 +19,16 @@ package org.springframework.http.codec.multipart;
 import java.io.File;
 import java.io.IOException;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.file.DirectoryStream;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFilePermission;
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 
 import org.junit.jupiter.api.Test;
@@ -32,6 +40,7 @@ import reactor.test.StepVerifier;
 
 import org.springframework.core.ResolvableType;
 import org.springframework.core.codec.DecodingException;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferUtils;
@@ -199,6 +208,52 @@ public class SynchronossPartHttpMessageReaderTests extends AbstractLeakCheckingT
 		);
 	}
 
+	@Test // CVE-2021-22118
+	void fileStorageDirectoryIsNotShared() throws IOException {
+		Path tempDirectory = Paths.get(System.getProperty("java.io.tmpdir"));
+		Path sharedDirectory = tempDirectory.resolve("nio-file-upload");
+		Set<Path> sharedFilesBefore = listFiles(sharedDirectory, "*");
+		Set<Path> directoriesBefore = listFiles(tempDirectory, "synchronoss-file-upload-*");
+
+		SynchronossPartHttpMessageReader synchronossReader = new SynchronossPartHttpMessageReader();
+		MultipartHttpMessageReader multipartReader = new MultipartHttpMessageReader(synchronossReader);
+		byte[] content = new byte[synchronossReader.getMaxInMemorySize() * 2];
+		MultipartBodyBuilder partsBuilder = new MultipartBodyBuilder();
+		partsBuilder.part("filePart", new ByteArrayResource(content)).filename("large.bin");
+
+		MultiValueMap<String, Part> parts = multipartReader.readMono(
+				PARTS_ELEMENT_TYPE, generateMultipartRequest(partsBuilder), emptyMap()).block();
+		assertThat(parts).containsOnlyKeys("filePart");
+
+		// Part bodies larger than maxInMemorySize must not be written to the shared temp directory
+		assertThat(listFiles(sharedDirectory, "*")).isEqualTo(sharedFilesBefore);
+
+		// ... but to a newly created directory that is accessible by the current user only
+		Set<Path> directories = listFiles(tempDirectory, "synchronoss-file-upload-*");
+		directories.removeAll(directoriesBefore);
+		assertThat(directories).hasSize(1);
+		Path fileStorageDirectory = directories.iterator().next();
+		assertThat(listFiles(fileStorageDirectory, "*")).isNotEmpty();
+		if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+			assertThat(Files.getPosixFilePermissions(fileStorageDirectory)).containsOnly(
+					PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE);
+		}
+
+		DataBuffer buffer = DataBufferUtils.join(parts.getFirst("filePart").content()).block();
+		assertThat(buffer.readableByteCount()).isEqualTo(content.length);
+		DataBufferUtils.release(buffer);
+	}
+
+	private static Set<Path> listFiles(Path directory, String glob) throws IOException {
+		Set<Path> result = new HashSet<>();
+		if (Files.isDirectory(directory)) {
+			try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory, glob)) {
+				stream.forEach(result::add);
+			}
+		}
+		return result;
+	}
+
 	private void testMultipartExceptions(
 			Consumer<SynchronossPartHttpMessageReader> configurer, Consumer<Throwable> assertions) {
 
@@ -214,7 +269,10 @@ public class SynchronossPartHttpMessageReaderTests extends AbstractLeakCheckingT
 		MultipartBodyBuilder partsBuilder = new MultipartBodyBuilder();
 		partsBuilder.part("filePart", new ClassPathResource("org/springframework/http/codec/multipart/foo.txt"));
 		partsBuilder.part("textPart", "sample-text");
+		return generateMultipartRequest(partsBuilder);
+	}
 
+	private ServerHttpRequest generateMultipartRequest(MultipartBodyBuilder partsBuilder) {
 		MockClientHttpRequest outputMessage = new MockClientHttpRequest(HttpMethod.POST, "/");
 		new MultipartHttpMessageWriter()
 				.write(Mono.just(partsBuilder.build()), null, MediaType.MULTIPART_FORM_DATA, outputMessage, null)
