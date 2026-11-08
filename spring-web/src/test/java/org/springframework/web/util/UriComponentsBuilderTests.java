@@ -1158,4 +1158,81 @@ class UriComponentsBuilderTests {
 		assertThat(UriComponentsBuilder.fromUriString("/path?q={asa}asa").toUriString()).isEqualTo("/path?q=%7Basa%7Dasa");
 	}
 
+	@Test
+	void fromUriStringWithBackslashBeforeAtSignInAuthority() {
+		UriComponents result = UriComponentsBuilder.fromUriString("https://evil.com\\@trusted.com/path").build();
+		assertThat(result.getScheme()).isEqualTo("https");
+		assertThat(result.getUserInfo()).isNull();
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPort()).isEqualTo(-1);
+		assertThat(result.getPath()).isEqualTo("\\@trusted.com/path");
+	}
+
+	@Test
+	void fromHttpUrlWithBackslashBeforeAtSignInAuthority() {
+		UriComponents result = UriComponentsBuilder.fromHttpUrl("https://evil.com\\@trusted.com/path").build();
+		assertThat(result.getScheme()).isEqualTo("https");
+		assertThat(result.getUserInfo()).isNull();
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPort()).isEqualTo(-1);
+		assertThat(result.getPath()).isEqualTo("\\@trusted.com/path");
+	}
+
+	@Test
+	void fromOriginHeaderWithBackslashBeforeAtSignInAuthority() {
+		UriComponents result = UriComponentsBuilder.fromOriginHeader("https://evil.com\\@trusted.com").build();
+		assertThat(result.getScheme()).isEqualTo("https");
+		assertThat(result.getUserInfo()).isNull();
+		assertThat(result.getHost()).isEqualTo("evil.com");
+	}
+
+	@Test
+	void fromUriStringWithBackslashAfterPortInAuthority() {
+		UriComponents result = UriComponentsBuilder.fromUriString("https://evil.com:443\\@trusted.com/path").build();
+		assertThat(result.getUserInfo()).isNull();
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPort()).isEqualTo(443);
+		assertThat(result.getPath()).isEqualTo("\\@trusted.com/path");
+
+		result = UriComponentsBuilder.fromHttpUrl("https://evil.com:443\\@trusted.com/path").build();
+		assertThat(result.getUserInfo()).isNull();
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPort()).isEqualTo(443);
+		assertThat(result.getPath()).isEqualTo("\\@trusted.com/path");
+	}
+
+	@Test
+	void fromUriStringWithBackslashInUserInfo() {
+		UriComponents result = UriComponentsBuilder.fromUriString("http://user\\name@trusted.com/path").build();
+		assertThat(result.getUserInfo()).isNull();
+		assertThat(result.getHost()).isEqualTo("user");
+		assertThat(result.getPath()).isEqualTo("\\name@trusted.com/path");
+
+		result = UriComponentsBuilder.fromHttpUrl("http://user\\name@trusted.com/path").build();
+		assertThat(result.getUserInfo()).isNull();
+		assertThat(result.getHost()).isEqualTo("user");
+		assertThat(result.getPath()).isEqualTo("\\name@trusted.com/path");
+	}
+
+	@Test
+	void fromUriStringWithBackslashInScheme() {
+		UriComponents result = UriComponentsBuilder.fromUriString("https\\://evil.com/path").build();
+		assertThat(result.getScheme()).isNull();
+		assertThat(result.getHost()).isNull();
+		assertThat(result.getPath()).startsWith("https\\:");
+	}
+
+	@Test
+	void fromUriStringWithBackslashInPath() {
+		UriComponents result = UriComponentsBuilder.fromUriString("https://example.com/a\\b?q=1").build();
+		assertThat(result.getHost()).isEqualTo("example.com");
+		assertThat(result.getPath()).isEqualTo("/a\\b");
+		assertThat(result.getQuery()).isEqualTo("q=1");
+
+		result = UriComponentsBuilder.fromHttpUrl("https://example.com/a\\b?q=1").build();
+		assertThat(result.getHost()).isEqualTo("example.com");
+		assertThat(result.getPath()).isEqualTo("/a\\b");
+		assertThat(result.getQuery()).isEqualTo("q=1");
+	}
+
 }
